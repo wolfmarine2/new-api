@@ -1323,6 +1323,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	}
 
+	info.CaptureLogResponse(responseText.String())
 	return usage, nil
 }
 
@@ -1488,6 +1489,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		break
 	}
 
+	info.CaptureLogResponse(string(responseBody))
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &usage, nil

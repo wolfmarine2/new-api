@@ -171,6 +171,9 @@ type RelayInfo struct {
 
 	StreamStatus *StreamStatus
 
+	LogRequestBody  string
+	LogResponseBody string
+
 	ThinkingContentInfo
 	TokenCountMeta
 	*ClaudeConvertInfo
@@ -645,6 +648,18 @@ func (info *RelayInfo) SetEstimatePromptTokens(promptTokens int) {
 
 func (info *RelayInfo) GetEstimatePromptTokens() int {
 	return info.estimatePromptTokens
+}
+
+func (info *RelayInfo) CaptureLogRequest(data string) {
+	if common.LogContentEnabled && data != "" {
+		info.LogRequestBody = data
+	}
+}
+
+func (info *RelayInfo) CaptureLogResponse(data string) {
+	if common.LogContentEnabled && data != "" {
+		info.LogResponseBody = data
+	}
 }
 
 func (info *RelayInfo) SetFirstResponseTime() {

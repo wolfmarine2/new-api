@@ -37,6 +37,8 @@ type Log struct {
 	Ip               string `json:"ip" gorm:"index;default:''"`
 	RequestId        string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	Other            string `json:"other"`
+	RequestBody      string `json:"request_body,omitempty" gorm:"type:text"`
+	ResponseBody     string `json:"response_body,omitempty" gorm:"type:text"`
 }
 
 // don't use iota, avoid change log type value
@@ -49,6 +51,14 @@ const (
 	LogTypeError   = 5
 	LogTypeRefund  = 6
 )
+
+func truncateLogContent(content string) string {
+	maxSize := common.LogContentMaxSize
+	if maxSize <= 0 || len(content) <= maxSize {
+		return content
+	}
+	return content[:maxSize]
+}
 
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
@@ -199,6 +209,8 @@ type RecordConsumeLogParams struct {
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
 	Other            map[string]interface{} `json:"other"`
+	RequestBody      string                 `json:"request_body"`
+	ResponseBody     string                 `json:"response_body"`
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -240,6 +252,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		}(),
 		RequestId: requestId,
 		Other:     otherStr,
+	}
+	if common.LogContentEnabled {
+		log.RequestBody = truncateLogContent(params.RequestBody)
+		log.ResponseBody = truncateLogContent(params.ResponseBody)
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
