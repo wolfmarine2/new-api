@@ -238,6 +238,7 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		}
 		if responseItem.Status == model.TaskStatusSuccess {
 			task.Progress = "100%"
+			ArchiveTaskDataOutputs(ctx, task.UserId, task.ChannelId, task.TaskID, task.Properties.OriginModelName, responseItem.Data)
 		}
 		task.Data = responseItem.Data
 
@@ -438,6 +439,9 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		task.Progress = taskcommon.ProgressComplete
 		if task.FinishTime == 0 {
 			task.FinishTime = now
+		}
+		if taskResult.Url != "" {
+			ArchiveTaskOutput(ctx, task.UserId, task.ChannelId, task.TaskID, task.Properties.OriginModelName, taskResult.Url)
 		}
 		if strings.HasPrefix(taskResult.Url, "data:") {
 			// data: URI (e.g. Vertex base64 encoded video) — keep in Data, not in ResultURL

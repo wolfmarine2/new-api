@@ -213,7 +213,11 @@ func InitDB() (err error) {
 func InitLogDB() (err error) {
 	if os.Getenv("LOG_SQL_DSN") == "" {
 		LOG_DB = DB
-		return
+		if !common.IsMasterNode {
+			return nil
+		}
+		common.SysLog("log database migration started")
+		return migrateLOGDB()
 	}
 	db, err := chooseDB("LOG_SQL_DSN", true)
 	if err == nil {
@@ -280,6 +284,7 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
+		&FileObject{},
 	)
 	if err != nil {
 		return err
@@ -328,6 +333,7 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
+		{&FileObject{}, "FileObject"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

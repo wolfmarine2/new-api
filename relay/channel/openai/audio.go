@@ -61,6 +61,8 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			return usage
 		}
 
+		service.ArchiveRelayOutputData(c, info, bodyBytes, resp.Header.Get("Content-Type"))
+
 		// 写入响应到客户端
 		c.Writer.WriteHeaderNow()
 		_, err = c.Writer.Write(bodyBytes)

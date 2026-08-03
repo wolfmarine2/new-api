@@ -574,6 +574,17 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
+	var imageResponse dto.ImageResponse
+	if common.Unmarshal(responseBody, &imageResponse) == nil {
+		for _, image := range imageResponse.Data {
+			if image.Url != "" {
+				service.ArchiveRelayOutput(c, info, image.Url, "")
+			} else if image.B64Json != "" {
+				service.ArchiveRelayOutput(c, info, image.B64Json, "")
+			}
+		}
+	}
+
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -463,6 +464,9 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 	}
 	if ti.Progress != "" {
 		task.Progress = ti.Progress
+	}
+	if ti.Url != "" {
+		service.ArchiveTaskOutput(context.Background(), task.UserId, task.ChannelId, task.TaskID, task.Properties.OriginModelName, ti.Url)
 	}
 	if strings.HasPrefix(ti.Url, "data:") {
 		// data: URI — kept in Data, not ResultURL
