@@ -440,6 +440,26 @@ export const useLogsData = () => {
             value: logs[i].content,
           });
         }
+        if (logs[i].request_body) {
+          expandDataLocal.push({
+            key: t('请求内容'),
+            value: (
+              <div style={{ maxWidth: 600, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6, fontFamily: 'monospace' }}>
+                {logs[i].request_body}
+              </div>
+            ),
+          });
+        }
+        if (logs[i].response_body) {
+          expandDataLocal.push({
+            key: t('响应内容'),
+            value: (
+              <div style={{ maxWidth: 600, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6, fontFamily: 'monospace' }}>
+                {logs[i].response_body}
+              </div>
+            ),
+          });
+        }
         if (isAdminUser && other?.reject_reason) {
           expandDataLocal.push({
             key: t('拦截原因'),
