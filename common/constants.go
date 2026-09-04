@@ -73,7 +73,7 @@ var DebugEnabled bool
 var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
-var LogContentEnabled = false
+var LogContentEnabled = true
 var LogContentMaxSize = 10240
 
 var TLSInsecureSkipVerify bool
