@@ -395,24 +395,22 @@ export const useLogsData = () => {
           value: logs[i].request_id,
         });
       }
-      if (logs[i].request_body) {
+      if (logs[i].type === 2 || logs[i].type === 5) {
+        const bodyStyle = { maxWidth: 600, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6, fontFamily: 'monospace' };
+        const emptyPlaceholder = (
+          <span style={{ color: 'var(--semi-color-text-2)' }}>{t('（未记录）')}</span>
+        );
         expandDataLocal.push({
           key: t('请求内容'),
-          value: (
-            <div style={{ maxWidth: 600, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6, fontFamily: 'monospace' }}>
-              {logs[i].request_body}
-            </div>
-          ),
+          value: logs[i].request_body ? (
+            <div style={bodyStyle}>{logs[i].request_body}</div>
+          ) : emptyPlaceholder,
         });
-      }
-      if (logs[i].response_body) {
         expandDataLocal.push({
           key: t('响应内容'),
-          value: (
-            <div style={{ maxWidth: 600, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6, fontFamily: 'monospace' }}>
-              {logs[i].response_body}
-            </div>
-          ),
+          value: logs[i].response_body ? (
+            <div style={bodyStyle}>{logs[i].response_body}</div>
+          ) : emptyPlaceholder,
         });
       }
       if (other?.ws || other?.audio) {
