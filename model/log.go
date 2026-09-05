@@ -153,7 +153,7 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 }
 
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
-	isStream bool, group string, other map[string]interface{}) {
+	isStream bool, group string, other map[string]interface{}, requestBody string, responseBody string) {
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
@@ -189,6 +189,10 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		}(),
 		RequestId: requestId,
 		Other:     otherStr,
+	}
+	if common.LogContentEnabled {
+		log.RequestBody = truncateLogContent(requestBody)
+		log.ResponseBody = truncateLogContent(responseBody)
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
