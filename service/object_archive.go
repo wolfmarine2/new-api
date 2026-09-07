@@ -169,6 +169,37 @@ func ArchiveTaskDataOutputs(_ context.Context, userID, channelID int, taskID, mo
 	archiveTaskJSONValue(archiveMetadata{userID: userID, channelID: channelID, taskID: taskID, modelName: modelName}, value, "", "")
 }
 
+// ArchiveRelayOutputStreamChunk scans one SSE chunk of a streaming response for
+// AI-generated documents/media. Chunks carrying complete file blocks (e.g.
+// Gemini inlineData, Responses output_item.done) are archived; text deltas
+// contain no file keys and are skipped cheaply by the JSON walk.
+func ArchiveRelayOutputStreamChunk(c *gin.Context, info *relaycommon.RelayInfo, chunk string) {
+	if chunk == "" {
+		return
+	}
+	ArchiveRelayOutputJSON(c, info, common.StringToByteSlice(chunk))
+}
+
+// ArchiveRelayOutputJSON scans a non-stream upstream response body for
+// AI-generated documents/media (base64 payloads, file URLs) and archives them.
+// It is the output-side counterpart of ArchiveRequestInputs.
+func ArchiveRelayOutputJSON(c *gin.Context, info *relaycommon.RelayInfo, responseBody []byte) {
+	setting := object_storage_setting.GetObjectStorageSetting()
+	if c == nil || info == nil || !setting.Enabled || !setting.UploadOutputs || len(responseBody) == 0 {
+		return
+	}
+	var value any
+	if common.Unmarshal(responseBody, &value) != nil {
+		return
+	}
+	meta := archiveMeta(c, info)
+	archiveJSONWalk(meta, value, "", "", func(kind, v, mimeType string) {
+		if !archiveSeen(c, "output:"+kind+":"+sourceIdentity(v)) {
+			queueArchiveValue(c, meta, "output", kind, v, mimeType)
+		}
+	})
+}
+
 func archiveTaskJSONValue(meta archiveMetadata, value any, key, inheritedMime string) {
 	archiveJSONWalk(meta, value, key, inheritedMime, func(kind, v, mimeType string) {
 		if !taskOutputAlreadyArchived(meta.taskID, v) {
@@ -215,7 +246,34 @@ func archiveValueKind(key, value, inheritedMime string) string {
 	if inheritedMime != "" && isBase64Key(key) {
 		return "base64"
 	}
+	// Bare base64 payloads (OpenAI b64_json, file_data, etc.) carry no sibling
+	// mime key, so gate on a charset/length sanity check to avoid archiving
+	// ordinary text values that happen to sit under a base64-ish key.
+	if (isBase64Key(key) || isFileDataKey(key)) && looksLikeBase64(value) {
+		return "base64"
+	}
 	return ""
+}
+
+func isFileDataKey(key string) bool {
+	key = strings.ToLower(key)
+	return key == "file_data" || key == "filedata"
+}
+
+// looksLikeBase64 does a cheap charset/length sanity check so plain text values
+// under file-like keys are not misclassified as documents.
+func looksLikeBase64(value string) bool {
+	if len(value) < 64 {
+		return false
+	}
+	for _, r := range value[:64] {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '+', r == '/', r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func queueArchiveValue(c *gin.Context, meta archiveMetadata, direction, kind, value, mimeType string) {

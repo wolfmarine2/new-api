@@ -34,6 +34,8 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	service.ArchiveRelayOutputJSON(c, info, responseBody)
+
 	if responsesResponse.HasImageGenerationCall() {
 		c.Set("image_generation_call", true)
 		c.Set("image_generation_call_quality", responsesResponse.GetQuality())
@@ -81,6 +83,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
+		service.ArchiveRelayOutputStreamChunk(c, info, data)
 		// 检查当前数据是否包含 completed 状态和 usage 信息
 		var streamResponse dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {

@@ -876,6 +876,7 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 	var err *types.NewAPIError
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		service.ArchiveRelayOutputStreamChunk(c, info, data)
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
@@ -952,6 +953,7 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 		println("responseBody: ", string(responseBody))
 	}
 	info.CaptureLogResponse(string(responseBody))
+	service.ArchiveRelayOutputJSON(c, info, responseBody)
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
 		return nil, handleErr

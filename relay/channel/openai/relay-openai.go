@@ -139,6 +139,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				secondLastStreamData = lastStreamData
 			}
 
+			service.ArchiveRelayOutputStreamChunk(c, info, data)
 			lastStreamData = data
 			streamItems = append(streamItems, data)
 		}
@@ -260,6 +261,8 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
+
+	service.ArchiveRelayOutputJSON(c, info, responseBody)
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
@@ -584,6 +587,8 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 			}
 		}
 	}
+
+	service.ArchiveRelayOutputJSON(c, info, responseBody)
 
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)

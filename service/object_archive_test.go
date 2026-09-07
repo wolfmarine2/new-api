@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/object_storage_setting"
@@ -146,13 +147,70 @@ func TestArchiveValueKind(t *testing.T) {
 		{"url", "https://example.com/a.png", "", "remote_url"},
 		{"content", "https://example.com/a.png", "", ""},
 		{"data", "aGVsbG8=", "audio/mpeg", "base64"},
-		{"data", "aGVsbG8=", "", ""},
+		{"data", "aGVsbG8=", "", ""}, // 太短且没有 mime，不归档
 		{"text", "hello world", "text/plain", ""},
 	}
 	for _, tc := range cases {
 		if got := archiveValueKind(tc.key, tc.value, tc.mime); got != tc.want {
 			t.Fatalf("archiveValueKind(%q, %q, %q) = %q, want %q", tc.key, tc.value, tc.mime, got, tc.want)
 		}
+	}
+}
+
+func TestArchiveValueKindBareBase64(t *testing.T) {
+	longB64 := strings.Repeat("QUJD", 32) // 128 chars of valid base64
+	cases := []struct{ key, value, mime, want string }{
+		{"file_data", longB64, "", "base64"},  // OpenAI file block without mime sibling
+		{"b64_json", longB64, "", "base64"},   // OpenAI image response payload
+		{"file_data", "short", "", ""},        // too short to be a document
+		{"file_data", "not base64 text with spaces and punctuation!!" + longB64, "", ""}, // invalid charset
+		{"text", longB64, "", ""},             // base64-looking value under a non-media key
+		{"data", longB64, "application/pdf", "base64"}, // mime-inherited path still works
+	}
+	for _, tc := range cases {
+		if got := archiveValueKind(tc.key, tc.value, tc.mime); got != tc.want {
+			t.Fatalf("archiveValueKind(%q, %.40q..., %q) = %q, want %q", tc.key, tc.value, tc.mime, got, tc.want)
+		}
+	}
+}
+
+func TestArchiveRelayOutputJSONScansResponseBody(t *testing.T) {
+	setting := object_storage_setting.GetObjectStorageSetting()
+	original := *setting
+	t.Cleanup(func() { *setting = original })
+	setting.Enabled, setting.UploadOutputs = true, true
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	var err error
+	c.Request, err = http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fileB64 := strings.Repeat("QUJD", 32)
+	body := `{"choices":[{"message":{"content":"done","files":[{"filename":"report.pdf","file_data":"` + fileB64 + `"}]}}]}`
+
+	// 直接验证响应体里的 file_data 能被 JSON walk 识别为可归档内容
+	var value any
+	if err := common.Unmarshal([]byte(body), &value); err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	archiveJSONWalk(archiveMetadata{}, value, "", "", func(kind, v, mimeType string) {
+		found++
+		if kind != "base64" {
+			t.Fatalf("kind = %q, want base64", kind)
+		}
+		data, _, decErr := decodeArchiveValue(v)
+		if decErr != nil {
+			t.Fatalf("decode: %v", decErr)
+		}
+		if string(data) != strings.Repeat("ABC", 32) {
+			t.Fatalf("decoded = %q", data)
+		}
+	})
+	if found != 1 {
+		t.Fatalf("expected 1 archivable value in response body, got %d", found)
 	}
 }
 
