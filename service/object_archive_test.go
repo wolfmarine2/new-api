@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/object_storage_setting"
@@ -277,5 +278,136 @@ func TestArchiveFreshPendingIsNotRetried(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("fresh pending retry created extra records: %d", count)
+	}
+}
+
+type stubPutObjectClient struct {
+	calls  int
+	bucket string
+	key    string
+	err    error
+}
+
+func (s *stubPutObjectClient) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	s.calls++
+	s.bucket = *input.Bucket
+	s.key = *input.Key
+	if s.err != nil {
+		return nil, s.err
+	}
+	etag := "etag-" + s.bucket
+	return &s3.PutObjectOutput{ETag: &etag}, nil
+}
+
+func setupDualTargetTest(t *testing.T) (*gorm.DB, *object_storage_setting.ObjectStorageSetting) {
+	t.Helper()
+	oldDB := model.DB
+	t.Cleanup(func() { model.DB = oldDB })
+	db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.DB = db
+	if err := db.AutoMigrate(&model.FileObject{}); err != nil {
+		t.Fatal(err)
+	}
+	setting := object_storage_setting.GetObjectStorageSetting()
+	original := *setting
+	t.Cleanup(func() { *setting = original })
+	setting.Enabled, setting.UploadOutputs = true, true
+	return db, setting
+}
+
+func TestArchiveFileUploadsToBothTargets(t *testing.T) {
+	setupDualTargetTest(t)
+	t.Setenv("S3_ENDPOINT", "http://127.0.0.1:9000")
+	t.Setenv("S3_REGION", "us-east-1")
+	t.Setenv("S3_BUCKET", "primary-bucket")
+	t.Setenv("S3_ACCESS_KEY_ID", "ak")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "sk")
+	t.Setenv("S3_BACKUP_ENDPOINT", "http://127.0.0.1:9001")
+	t.Setenv("S3_BACKUP_REGION", "us-west-1")
+	t.Setenv("S3_BACKUP_BUCKET", "backup-bucket")
+	t.Setenv("S3_BACKUP_ACCESS_KEY_ID", "bak")
+	t.Setenv("S3_BACKUP_SECRET_ACCESS_KEY", "bsk")
+
+	clients := map[string]*stubPutObjectClient{}
+	originalClient := newObjectStorageClient
+	t.Cleanup(func() { newObjectStorageClient = originalClient })
+	newObjectStorageClient = func(_ context.Context, endpoint, _, _, _, _ string, _ bool) (S3PutObjectAPI, error) {
+		client := &stubPutObjectClient{}
+		clients[endpoint] = client
+		return client, nil
+	}
+
+	object, err := ArchiveFile(context.Background(), ArchiveFileInput{UserID: 1, RequestID: "dual-req", Direction: "input", SourceKind: "base64", MimeType: "image/png", Data: strings.NewReader("dual"), Size: 4})
+	if err != nil {
+		t.Fatalf("dual-target archive should succeed: %v", err)
+	}
+	if object.Status != "uploaded" {
+		t.Fatalf("status = %q, want uploaded", object.Status)
+	}
+	if len(clients) != 2 {
+		t.Fatalf("expected 2 storage clients, got %d", len(clients))
+	}
+	for endpoint, client := range clients {
+		if client.calls != 1 {
+			t.Fatalf("target %s received %d uploads, want 1", endpoint, client.calls)
+		}
+		if client.key != object.ObjectKey {
+			t.Fatalf("target %s object key = %q, want %q", endpoint, client.key, object.ObjectKey)
+		}
+	}
+	if !strings.Contains(object.Extra, "backup-bucket") || !strings.Contains(object.Extra, "primary-bucket") {
+		t.Fatalf("extra should record both target results, got %q", object.Extra)
+	}
+}
+
+func TestArchiveFilePartialWhenBackupFails(t *testing.T) {
+	setupDualTargetTest(t)
+	t.Setenv("S3_ENDPOINT", "http://127.0.0.1:9000")
+	t.Setenv("S3_REGION", "us-east-1")
+	t.Setenv("S3_BUCKET", "primary-bucket")
+	t.Setenv("S3_ACCESS_KEY_ID", "ak")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "sk")
+	t.Setenv("S3_BACKUP_ENDPOINT", "http://127.0.0.1:9001")
+	t.Setenv("S3_BACKUP_REGION", "us-west-1")
+	t.Setenv("S3_BACKUP_BUCKET", "backup-bucket")
+	t.Setenv("S3_BACKUP_ACCESS_KEY_ID", "bak")
+	t.Setenv("S3_BACKUP_SECRET_ACCESS_KEY", "bsk")
+
+	originalClient := newObjectStorageClient
+	t.Cleanup(func() { newObjectStorageClient = originalClient })
+	newObjectStorageClient = func(_ context.Context, endpoint, _, _, _, _ string, _ bool) (S3PutObjectAPI, error) {
+		if endpoint == "http://127.0.0.1:9001" {
+			return &stubPutObjectClient{err: errors.New("backup unreachable")}, nil
+		}
+		return &stubPutObjectClient{}, nil
+	}
+
+	object, err := ArchiveFile(context.Background(), ArchiveFileInput{UserID: 1, RequestID: "partial-req", Direction: "input", SourceKind: "base64", MimeType: "image/png", Data: strings.NewReader("partial"), Size: 7})
+	if err == nil {
+		t.Fatal("backup failure should surface an error")
+	}
+	if object.Status != "partial" {
+		t.Fatalf("status = %q, want partial", object.Status)
+	}
+	if !strings.Contains(object.ErrorMessage, "backup unreachable") {
+		t.Fatalf("error message should mention backup failure, got %q", object.ErrorMessage)
+	}
+}
+
+func TestArchiveFileRejectsPartialBackupConfig(t *testing.T) {
+	setupDualTargetTest(t)
+	t.Setenv("S3_ENDPOINT", "http://127.0.0.1:9000")
+	t.Setenv("S3_REGION", "us-east-1")
+	t.Setenv("S3_BUCKET", "primary-bucket")
+	t.Setenv("S3_ACCESS_KEY_ID", "ak")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "sk")
+	// backup bucket set without credentials -> misconfiguration must be loud
+	t.Setenv("S3_BACKUP_BUCKET", "backup-bucket")
+
+	if _, err := ArchiveFile(context.Background(), ArchiveFileInput{UserID: 1, RequestID: "bad-backup", Direction: "input", SourceKind: "base64", MimeType: "image/png", Data: strings.NewReader("x"), Size: 1}); err == nil {
+		t.Fatal("incomplete backup configuration should fail")
 	}
 }

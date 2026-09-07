@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,75 @@ var (
 // in-flight (worker uploads time out in seconds) before it is treated as
 // orphaned by a crashed worker and retried.
 const archiveStalePendingAfter = 10 * time.Minute
+
+// storageTarget is one S3-compatible destination for archived objects.
+type storageTarget struct {
+	Name            string `json:"name"`
+	Endpoint        string `json:"-"`
+	Region          string `json:"-"`
+	Bucket          string `json:"bucket"`
+	AccessKeyID     string `json:"-"`
+	SecretAccessKey string `json:"-"`
+	SessionToken    string `json:"-"`
+	ForcePathStyle  bool   `json:"-"`
+}
+
+// targetResult records the outcome of uploading to one storage target.
+type targetResult struct {
+	Name      string `json:"name"`
+	Bucket    string `json:"bucket"`
+	ObjectKey string `json:"object_key"`
+	ETag      string `json:"etag,omitempty"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
+}
+
+// loadStorageTargets builds the upload target list from the environment. The
+// primary target uses S3_* variables; an optional backup target uses S3_BACKUP_*.
+// A partially configured backup is an error so misconfiguration is never silent.
+func loadStorageTargets() ([]storageTarget, error) {
+	primary := storageTarget{
+		Name:            "primary",
+		Endpoint:        strings.TrimSpace(os.Getenv("S3_ENDPOINT")),
+		Region:          strings.TrimSpace(os.Getenv("S3_REGION")),
+		Bucket:          strings.TrimSpace(os.Getenv("S3_BUCKET")),
+		AccessKeyID:     strings.TrimSpace(os.Getenv("S3_ACCESS_KEY_ID")),
+		SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+		SessionToken:    os.Getenv("S3_SESSION_TOKEN"),
+	}
+	forcePathStyle, err := parseOptionalBool(os.Getenv("S3_FORCE_PATH_STYLE"))
+	if err != nil {
+		return nil, err
+	}
+	primary.ForcePathStyle = forcePathStyle
+	if primary.Endpoint == "" || primary.Region == "" || primary.Bucket == "" || primary.AccessKeyID == "" || primary.SecretAccessKey == "" {
+		return nil, ErrObjectStorageUnconfigured
+	}
+	targets := []storageTarget{primary}
+
+	backup := storageTarget{
+		Name:            "backup",
+		Endpoint:        strings.TrimSpace(os.Getenv("S3_BACKUP_ENDPOINT")),
+		Region:          strings.TrimSpace(os.Getenv("S3_BACKUP_REGION")),
+		Bucket:          strings.TrimSpace(os.Getenv("S3_BACKUP_BUCKET")),
+		AccessKeyID:     strings.TrimSpace(os.Getenv("S3_BACKUP_ACCESS_KEY_ID")),
+		SecretAccessKey: os.Getenv("S3_BACKUP_SECRET_ACCESS_KEY"),
+		SessionToken:    os.Getenv("S3_BACKUP_SESSION_TOKEN"),
+	}
+	backupConfigured := backup.Endpoint != "" || backup.Region != "" || backup.Bucket != "" || backup.AccessKeyID != "" || backup.SecretAccessKey != ""
+	if backupConfigured {
+		if backup.Endpoint == "" || backup.Region == "" || backup.Bucket == "" || backup.AccessKeyID == "" || backup.SecretAccessKey == "" {
+			return nil, errors.New("S3_BACKUP_* 备份存储配置不完整：endpoint/region/bucket/access key/secret key 必须全部提供")
+		}
+		backupForcePathStyle, err := parseOptionalBool(os.Getenv("S3_BACKUP_FORCE_PATH_STYLE"))
+		if err != nil {
+			return nil, err
+		}
+		backup.ForcePathStyle = backupForcePathStyle
+		targets = append(targets, backup)
+	}
+	return targets, nil
+}
 
 // ArchiveFileInput describes an artifact to persist. Data is consumed exactly once.
 type ArchiveFileInput struct {
@@ -71,9 +141,10 @@ var newObjectStorageClient = func(ctx context.Context, endpoint, region, accessK
 	}), nil
 }
 
-// ArchiveFile creates an object metadata record, uploads the contents to S3-compatible
-// storage, then records either uploaded or failed. Callers may intentionally ignore its
-// error so an archive failure never has to block their primary business operation.
+// ArchiveFile creates an object metadata record, uploads the contents to every
+// configured S3-compatible target, then records the per-target outcome. Callers
+// may intentionally ignore its error so an archive failure never has to block
+// their primary business operation.
 func ArchiveFile(ctx context.Context, input ArchiveFileInput) (*model.FileObject, error) {
 	setting := object_storage_setting.GetObjectStorageSetting()
 	if !setting.Enabled {
@@ -83,15 +154,7 @@ func ArchiveFile(ctx context.Context, input ArchiveFileInput) (*model.FileObject
 		return nil, errors.New("object archive data is required")
 	}
 
-	endpoint := strings.TrimSpace(os.Getenv("S3_ENDPOINT"))
-	region := strings.TrimSpace(os.Getenv("S3_REGION"))
-	bucket := strings.TrimSpace(os.Getenv("S3_BUCKET"))
-	accessKeyID := strings.TrimSpace(os.Getenv("S3_ACCESS_KEY_ID"))
-	secretAccessKey := os.Getenv("S3_SECRET_ACCESS_KEY")
-	if endpoint == "" || region == "" || bucket == "" || accessKeyID == "" || secretAccessKey == "" {
-		return nil, ErrObjectStorageUnconfigured
-	}
-	forcePathStyle, err := parseOptionalBool(os.Getenv("S3_FORCE_PATH_STYLE"))
+	targets, err := loadStorageTargets()
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +190,7 @@ func ArchiveFile(ctx context.Context, input ArchiveFileInput) (*model.FileObject
 		OriginalFilename: input.OriginalFilename,
 		OriginalURL:      sanitizeArchiveURL(input.OriginalURL),
 		Extra:            input.Extra,
-		Bucket:           bucket,
+		Bucket:           targets[0].Bucket,
 		ObjectKey:        buildObjectKey(setting.Prefix, input.UserID, input.RequestID),
 		SHA256:           fmt.Sprintf("%x", sum),
 		Size:             int64(len(data)),
@@ -153,7 +216,7 @@ func ArchiveFile(ctx context.Context, input ArchiveFileInput) (*model.FileObject
 				return &existing, nil
 			}
 			fallthrough
-		case "failed":
+		case "failed", "partial":
 			object = &existing
 			if updateErr := model.DB.Model(object).Updates(map[string]interface{}{
 				"status":        "pending",
@@ -171,31 +234,98 @@ func ArchiveFile(ctx context.Context, input ArchiveFileInput) (*model.FileObject
 		}
 	}
 
-	client, err := newObjectStorageClient(ctx, endpoint, region, accessKeyID, secretAccessKey, os.Getenv("S3_SESSION_TOKEN"), forcePathStyle)
-	if err == nil {
-		output, putErr := client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket:      &bucket,
-			Key:         &object.ObjectKey,
-			Body:        bytes.NewReader(data),
-			ContentType: optionalString(input.MimeType),
-		})
-		if putErr == nil {
-			if output.ETag != nil {
-				object.ETag = *output.ETag
-			}
-			if updateErr := object.UpdateStatus("uploaded", ""); updateErr != nil {
-				return object, fmt.Errorf("mark object archive uploaded: %w", updateErr)
-			}
-			return object, nil
-		}
-		err = fmt.Errorf("upload object archive: %w", putErr)
+	results := uploadToTargets(ctx, targets, object.ObjectKey, data, input.MimeType)
+	extraWithTargets, extraErr := mergeTargetResultsIntoExtra(object.Extra, results)
+	if extraErr == nil {
+		object.Extra = extraWithTargets
 	}
 
-	updateErr := object.UpdateStatus("failed", err.Error())
-	if updateErr != nil {
-		return object, errors.Join(err, fmt.Errorf("mark object archive failed: %w", updateErr))
+	// uploaded = all targets ok; partial = at least one ok; failed = none ok.
+	succeeded := 0
+	var firstErr error
+	for _, r := range results {
+		if r.Status == "uploaded" {
+			succeeded++
+			continue
+		}
+		if firstErr == nil {
+			firstErr = errors.New(r.Error)
+		}
 	}
-	return object, err
+
+	primary := results[0]
+	if primary.ETag != "" {
+		object.ETag = primary.ETag
+	}
+
+	switch {
+	case succeeded == len(results):
+		if updateErr := object.UpdateStatus("uploaded", ""); updateErr != nil {
+			return object, fmt.Errorf("mark object archive uploaded: %w", updateErr)
+		}
+		return object, nil
+	case succeeded > 0:
+		err = fmt.Errorf("部分存储目标上传失败: %w", firstErr)
+		if updateErr := object.UpdateStatus("partial", err.Error()); updateErr != nil {
+			return object, errors.Join(err, fmt.Errorf("mark object archive partial: %w", updateErr))
+		}
+		return object, err
+	default:
+		err = fmt.Errorf("upload object archive: %w", firstErr)
+		if updateErr := object.UpdateStatus("failed", err.Error()); updateErr != nil {
+			return object, errors.Join(err, fmt.Errorf("mark object archive failed: %w", updateErr))
+		}
+		return object, err
+	}
+}
+
+// uploadToTargets uploads data to every target sequentially and returns one
+// result per target, in the same order. The object key is identical across
+// targets so the same file is easy to locate in each bucket.
+func uploadToTargets(ctx context.Context, targets []storageTarget, objectKey string, data []byte, mimeType string) []targetResult {
+	results := make([]targetResult, 0, len(targets))
+	for _, target := range targets {
+		result := targetResult{Name: target.Name, Bucket: target.Bucket, ObjectKey: objectKey}
+		client, err := newObjectStorageClient(ctx, target.Endpoint, target.Region, target.AccessKeyID, target.SecretAccessKey, target.SessionToken, target.ForcePathStyle)
+		if err == nil {
+			var output *s3.PutObjectOutput
+			output, err = client.PutObject(ctx, &s3.PutObjectInput{
+				Bucket:      &target.Bucket,
+				Key:         &objectKey,
+				Body:        bytes.NewReader(data),
+				ContentType: optionalString(mimeType),
+			})
+			if err == nil {
+				result.Status = "uploaded"
+				if output.ETag != nil {
+					result.ETag = *output.ETag
+				}
+			}
+		}
+		if err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+// mergeTargetResultsIntoExtra records per-target outcomes in the Extra JSON
+// field under "targets", preserving any pre-existing keys.
+func mergeTargetResultsIntoExtra(extra string, results []targetResult) (string, error) {
+	extraMap := map[string]interface{}{}
+	if strings.TrimSpace(extra) != "" {
+		if err := json.Unmarshal([]byte(extra), &extraMap); err != nil {
+			return extra, err
+		}
+	}
+	extraMap["targets"] = results
+	merged, err := json.Marshal(extraMap)
+	if err != nil {
+		return extra, err
+	}
+	return string(merged), nil
 }
 
 func readArchiveData(reader io.Reader, maxSize int64) ([]byte, error) {

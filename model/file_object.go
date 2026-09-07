@@ -42,5 +42,6 @@ func (fileObject *FileObject) UpdateStatus(status, errorMessage string) error {
 		"status":        status,
 		"error_message": errorMessage,
 		"etag":          fileObject.ETag,
+		"extra":         fileObject.Extra,
 	}).Error
 }
