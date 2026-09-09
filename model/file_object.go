@@ -45,3 +45,22 @@ func (fileObject *FileObject) UpdateStatus(status, errorMessage string) error {
 		"extra":         fileObject.Extra,
 	}).Error
 }
+
+// GetFileObjectsByRequestID returns archived objects for one relay request,
+// newest first. Only uploaded objects are meaningful to callers.
+func GetFileObjectsByRequestID(requestID string) ([]*FileObject, error) {
+	var objects []*FileObject
+	err := DB.Where("request_id = ?", requestID).Order("id desc").Find(&objects).Error
+	return objects, err
+}
+
+// GetFileObjectsByRequestIDs returns archived objects for multiple relay
+// requests in a single query, for batch display in the usage log page.
+func GetFileObjectsByRequestIDs(requestIDs []string) ([]*FileObject, error) {
+	var objects []*FileObject
+	if len(requestIDs) == 0 {
+		return objects, nil
+	}
+	err := DB.Where("request_id IN ?", requestIDs).Order("id desc").Find(&objects).Error
+	return objects, err
+}

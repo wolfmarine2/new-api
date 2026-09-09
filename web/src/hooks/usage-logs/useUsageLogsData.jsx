@@ -42,6 +42,7 @@ import {
 import { ITEMS_PER_PAGE } from '../../constants';
 import { useTableCompactMode } from '../common/useTableCompactMode';
 import ParamOverrideEntry from '../../components/table/usage-logs/components/ParamOverrideEntry';
+import ArchiveFiles from '../../components/table/usage-logs/ArchiveFiles';
 
 export const useLogsData = () => {
   const { t } = useTranslation();
@@ -412,6 +413,12 @@ export const useLogsData = () => {
             <div style={bodyStyle}>{logs[i].response_body}</div>
           ) : emptyPlaceholder,
         });
+        if (logs[i].request_id) {
+          expandDataLocal.push({
+            key: t('关联文件'),
+            value: <ArchiveFiles requestId={logs[i].request_id} />,
+          });
+        }
       }
       if (other?.ws || other?.audio) {
         expandDataLocal.push({

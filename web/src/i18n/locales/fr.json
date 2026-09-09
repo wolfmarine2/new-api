@@ -3645,6 +3645,12 @@
     "默认补全倍率": "Taux de complétion par défaut",
     "请求内容": "Contenu de la requête",
     "响应内容": "Contenu de la réponse",
-    "（未记录）": "(non enregistré)"
+    "（未记录）": "(non enregistré)",
+    "关联文件": "Fichiers joints",
+    "用户上传": "Envoi utilisateur",
+    "AI生成": "Généré par IA",
+    "源文件": "Source",
+    "（无文件）": "(aucun)",
+    "下载": "Télécharger"
   }
 }

@@ -381,6 +381,56 @@ func parseOptionalBool(value string) (bool, error) {
 	return parsed, nil
 }
 
+// PresignDownloadURL generates a short-lived presigned GET URL for an archived
+// object. It tries each configured target in order and returns the first
+// successful signature, so objects that only landed on the backup storage
+// remain downloadable.
+func PresignDownloadURL(ctx context.Context, object *model.FileObject) (string, error) {
+	if object == nil || object.Bucket == "" || object.ObjectKey == "" {
+		return "", errors.New("object record is missing bucket or key")
+	}
+	targets, err := loadStorageTargets()
+	if err != nil {
+		return "", err
+	}
+	var lastErr error
+	for _, target := range targets {
+		if !strings.EqualFold(target.Bucket, object.Bucket) {
+			continue
+		}
+		loadOptions := []func(*awsconfig.LoadOptions) error{
+			awsconfig.WithRegion(target.Region),
+			awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(target.AccessKeyID, target.SecretAccessKey, target.SessionToken)),
+		}
+		cfg, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		presignClient := s3.NewPresignClient(s3.NewFromConfig(cfg, func(options *s3.Options) {
+			options.BaseEndpoint = &target.Endpoint
+			options.UsePathStyle = target.ForcePathStyle
+		}))
+		bucket := object.Bucket
+		key := object.ObjectKey
+		presigned, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+			Bucket: &bucket,
+			Key:    &key,
+		}, func(opts *s3.PresignOptions) {
+			opts.Expires = 15 * time.Minute
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return presigned.URL, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no configured storage target matches bucket %q", object.Bucket)
+	}
+	return "", lastErr
+}
+
 func optionalString(value string) *string {
 	if value == "" {
 		return nil

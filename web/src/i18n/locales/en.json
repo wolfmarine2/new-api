@@ -3790,6 +3790,12 @@
     "（当前仅支持易支付接口，默认使用上方服务器地址作为回调地址！）": "(Currently only supports Epay interface, the default callback address is the server address above!)",
     "请求内容": "Request Content",
     "响应内容": "Response Content",
-    "（未记录）": "(not recorded)"
+    "（未记录）": "(not recorded)",
+    "关联文件": "Attached Files",
+    "用户上传": "User Upload",
+    "AI生成": "AI Generated",
+    "源文件": "Source",
+    "（无文件）": "(none)",
+    "下载": "Download"
   }
 }
