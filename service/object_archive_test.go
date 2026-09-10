@@ -140,6 +140,20 @@ func TestFetchArchiveURLBlocksLoopback(t *testing.T) {
 	}
 }
 
+func TestFormatArchiveTargets(t *testing.T) {
+	if got := formatArchiveTargets(nil); got != "" {
+		t.Fatalf("nil object: got %q", got)
+	}
+	if got := formatArchiveTargets(&model.FileObject{Extra: "not json"}); got != "" {
+		t.Fatalf("bad json: got %q", got)
+	}
+	ok := &model.FileObject{Extra: `{"targets":[{"name":"primary","bucket":"bucket-a","object_key":"k","status":"uploaded"},{"name":"backup","bucket":"bucket-b","object_key":"k","status":"failed","error":"timeout"}]}`}
+	got := formatArchiveTargets(ok)
+	if !strings.Contains(got, "主存储[bucket-a] ✓") || !strings.Contains(got, "备份存储[bucket-b] ✗(timeout)") {
+		t.Fatalf("unexpected format: %q", got)
+	}
+}
+
 func TestArchiveValueKind(t *testing.T) {
 	cases := []struct{ key, value, mime, want string }{
 		{"content", "data:image/png;base64,aGVsbG8=", "", "data_url"},

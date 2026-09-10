@@ -329,6 +329,7 @@ func archiveJobNow(job archiveJob) {
 		data, mimeType, err = fetchArchiveURL(job.remoteURL, archiveMaxSize())
 		if err != nil {
 			archiveLog(nil, "remote source", err)
+			recordArchiveResult(job, 0, nil, fmt.Errorf("下载远程文件失败: %v", err))
 			return
 		}
 		if job.mimeType == "" {
@@ -337,9 +338,95 @@ func archiveJobNow(job archiveJob) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), archiveFetchTimeout)
 	defer cancel()
-	_, err := ArchiveFile(ctx, ArchiveFileInput{UserID: job.meta.userID, RequestID: job.meta.requestID, TaskID: job.meta.taskID, ChannelID: job.meta.channelID, ModelName: job.meta.modelName, Direction: job.direction, SourceKind: job.kind, MimeType: job.mimeType, OriginalFilename: job.filename, OriginalURL: job.originalURL, SourceHash: job.sourceHash, Data: bytes.NewReader(data), Size: int64(len(data))})
+	object, err := ArchiveFile(ctx, ArchiveFileInput{UserID: job.meta.userID, RequestID: job.meta.requestID, TaskID: job.meta.taskID, ChannelID: job.meta.channelID, ModelName: job.meta.modelName, Direction: job.direction, SourceKind: job.kind, MimeType: job.mimeType, OriginalFilename: job.filename, OriginalURL: job.originalURL, SourceHash: job.sourceHash, Data: bytes.NewReader(data), Size: int64(len(data))})
+	recordArchiveResult(job, int64(len(data)), object, err)
 	if err != nil {
 		archiveLog(nil, job.direction+" archive", err)
+	}
+}
+
+// recordArchiveResult writes every archive outcome to the system log table so
+// admins can audit file uploads from the UI (日志页 type=4), and to the
+// container log for operators.
+func recordArchiveResult(job archiveJob, size int64, object *model.FileObject, archiveErr error) {
+	name := job.filename
+	if name == "" && object != nil {
+		name = object.ObjectKey
+	}
+	if name == "" {
+		name = job.kind
+	}
+	direction := "上传"
+	if job.direction == "output" {
+		direction = "AI生成"
+	}
+	base := fmt.Sprintf("文件归档 [请求 %s] %s：%s (%s, %s)",
+		job.meta.requestID, direction, name, job.mimeType, formatArchiveSize(size))
+	targets := formatArchiveTargets(object)
+	if archiveErr != nil {
+		content := base + " 失败: " + archiveErr.Error()
+		if targets != "" {
+			content += " | " + targets
+		}
+		model.RecordLog(job.meta.userID, model.LogTypeSystem, content)
+		logger.LogError(context.Background(), "object archive failed: "+content)
+		return
+	}
+	content := base + " 成功"
+	if targets != "" {
+		content += " | " + targets
+	}
+	model.RecordLog(job.meta.userID, model.LogTypeSystem, content)
+	logger.LogInfo(context.Background(), "object archive succeeded: "+content)
+}
+
+// formatArchiveTargets renders per-target upload results stored in Extra as a
+// compact readable string, e.g. "主存储[桶A]✓ 备份[桶B]✗(超时)".
+func formatArchiveTargets(object *model.FileObject) string {
+	if object == nil || object.Extra == "" {
+		return ""
+	}
+	var extra struct {
+		Targets []struct {
+			Name   string `json:"name"`
+			Bucket string `json:"bucket"`
+			Status string `json:"status"`
+			Error  string `json:"error,omitempty"`
+		} `json:"targets"`
+	}
+	if err := common.Unmarshal([]byte(object.Extra), &extra); err != nil || len(extra.Targets) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(extra.Targets))
+	for _, t := range extra.Targets {
+		label := t.Name
+		if t.Name == "primary" {
+			label = "主存储"
+		} else if t.Name == "backup" {
+			label = "备份存储"
+		}
+		part := fmt.Sprintf("%s[%s]", label, t.Bucket)
+		if t.Status == "uploaded" {
+			part += " ✓"
+		} else {
+			part += " ✗"
+			if t.Error != "" {
+				part += "(" + t.Error + ")"
+			}
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatArchiveSize(size int64) string {
+	switch {
+	case size >= 1024*1024:
+		return fmt.Sprintf("%.2f MB", float64(size)/1024/1024)
+	case size >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	default:
+		return fmt.Sprintf("%d B", size)
 	}
 }
 func fetchArchiveURL(raw string, max int64) ([]byte, string, error) {
